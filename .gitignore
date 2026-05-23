@@ -1,0 +1,22 @@
+# build artefacts (Makefile builds out-of-tree into $HOME/.uz80 by default,
+# but if anyone overrides BUILD= to point inside the tree, ignore these)
+*.rel
+*.lst
+*.sym
+*.lk
+*.map
+*.noi
+*.ihx
+*.img
+*.rom
+*.asm
+*.rst
+build/
+data/
+
+# screenshots saved by `make shot` / `make demo` if BUILD is in-tree
+*.jpg
+*.png
+
+# macOS
+.DS_Store
