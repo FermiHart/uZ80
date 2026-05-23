@@ -12,7 +12,7 @@ with not one byte of glibc. None of that was the plan.
 ```
                   UZ80
            Z80 MICRO-KERNEL
-         HOSTED ON BEAR LIBCS
+         BUILT FROM BEAR LIBCS
 
         F E R M I  ∞  H A R T
 
