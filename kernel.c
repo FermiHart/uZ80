@@ -26,12 +26,16 @@ void beep_tone(uint16_t cycles, uint16_t half)
 {
     spk_state = 0;
     while (cycles--) {
-        uint16_t h = half;
+        /* `h` MUST be volatile: it is the entire timing loop. Without it a
+         * smarter SDCC pass (or -O on a future toolchain) is free to delete
+         * an empty `while (h--) {}`, collapsing every note to zero duration
+         * and silencing the speaker. volatile forces the decrements to stand. */
+        volatile uint16_t h = half;
         spk_state ^= 0x10;
         /* fire the speaker bit + a black border */
         __asm__("ld   a,(_spk_state)\n"
                 "out  (0xfe),a");
-        while (h--) { /* busy wait */ }
+        while (h--) { /* busy wait — kept honest by volatile */ }
     }
     /* leave the speaker line low */
     spk_state = 0;

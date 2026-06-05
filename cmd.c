@@ -198,13 +198,17 @@ static void cmd_uptime(char *arg)
 
 static void cmd_history(char *arg)
 {
-    /* The history array lives inside tty.c — expose it via a small
-     * accessor.  We just call our own hist_get analogue here by walking
-     * the readline history through a single tty entry point.  For
-     * simplicity v2 prints a hint instead. */
+    uint8_t n = tty_hist_count();
+    uint8_t i;
     (void)arg;
-    tty_puts("(use UP/DOWN at the prompt:\n");
-    tty_puts(" caps+7 = up, caps+6 = down)\n");
+    if (!n) { tty_puts("(no history yet)\n"); return; }
+    /* oldest first: entry `n` is the oldest, entry 1 the most recent */
+    for (i = n; i >= 1; i--) {
+        tty_putu((uint16_t)(n - i + 1));
+        tty_puts("  ");
+        tty_puts(tty_hist_get(i));
+        tty_putc('\n');
+    }
 }
 
 /* --- fortunes / motd / bear ascii --- */

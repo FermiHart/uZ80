@@ -261,6 +261,10 @@ static const char *hist_get(uint8_t back)
     return hist[(uint8_t)((hist_head + HIST_DEPTH - back) % HIST_DEPTH)];
 }
 
+/* Public read-only view for the `history` builtin (cmd.c). */
+uint8_t     tty_hist_count(void)        { return hist_n; }
+const char *tty_hist_get(uint8_t back)  { return hist_get(back); }
+
 void tty_readline(char *buf, uint8_t cap)
 {
     uint8_t  start_x = cx, start_y = cy;

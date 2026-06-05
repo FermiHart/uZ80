@@ -15,10 +15,23 @@
  *
  *    0x6000..0x6007   keyboard half-rows         (kbd_scan, crt0.s)
  *    0x6008..0x6009   16-bit frame counter       (IM 1 ISR, crt0.s)
- *    0x6010..0x60FF   reserved
- *    0x6100..0x7FFF   filesystem block           (fs.c, ~8 KiB)
- *    0x8000..0xFEFF   C statics + heap (unused)
- *    0xFF00..0xFFFF   stack
+ *    0x600A..0x600F   free (was beeper scratch — beeper now in C)
+ *    0x6010..0x63FF   SDCC C statics (_DATA), grows up   (--data-loc 0x6010)
+ *                     measured 456 B (0x6010..0x61D8) per uz80.map; crt0
+ *                     zeroes this whole window so BSS reads zero at boot.
+ *    0x6400..0x74D0   filesystem block           (fs.c, FS hardcoded @0x6400)
+ *    0x8000..0xE000   uForth state (DSTK/RSTK/dict)  (forth.c, hardcoded)
+ *    0xE000..0xFEFF   free
+ *    0xFF00           stack pointer init — grows DOWN into the region above
+ *                     (0xFF00..0xFFFF stays unused: SP never climbs past init)
+ *
+ *  Memory-layout note (was a collision — now resolved & verified on QEMU):
+ *    _DATA starts at 0x6010 and grows up.  The FS used to sit at 0x6100,
+ *    leaving only 240 B for statics; the 456 B _DATA overran the /motd file
+ *    by 216 B (visible corruption on a real boot).  Fix: FS moved to 0x6400
+ *    (≈1 KiB headroom) and crt0's clear extended to 0x6000..0x63FF so the
+ *    larger _DATA stays zero-initialised.  Confirm l__DATA in $(BUILD)/
+ *    uz80.map stays below 0x6400 if you add many new statics.
  *
  *  Author: F E R M I ∞ H A R T <contact@fermihart.com>
  *  SPDX-License-Identifier: Unlicense
@@ -92,5 +105,11 @@ void forth_eval(const char *script);          /* one-shot scripted eval     */
 
 /* ── history (tty.c) ──────────────────────────────────────────────────────── */
 #define HIST_DEPTH 8
+
+/* Read-only view of the command history for the `history` builtin.
+ * tty_hist_count() returns how many entries are stored (0..HIST_DEPTH);
+ * tty_hist_get(back) returns entry `back` where 1 = most recent, or "". */
+uint8_t     tty_hist_count(void);
+const char *tty_hist_get(uint8_t back);
 
 #endif /* UZ80_H */
