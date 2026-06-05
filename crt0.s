@@ -1,4 +1,4 @@
-;; UZ80 · crt0.s — reset vector, IM 1 ISR, keyboard scan, beeper
+;; UZ80 · crt0.s — reset vector, IM 1 ISR, keyboard scan
 ;;
 ;; The z80 begins at 0x0000 on reset.  We point the stack at the top of
 ;; RAM, zero our scratch region, install IM 1 so the ULA's 50 Hz frame
@@ -41,10 +41,15 @@
 init:
         ld      sp, #0xff00             ; stack at top of RAM, below 0xFF00
 
-        ;; zero 0x6000..0x60FF (kbd buffer, frame counter, C statics)
+        ;; Zero 0x6000..0x63FF: kbd buffer, frame counter, and the ENTIRE
+        ;; SDCC _DATA segment (statics/BSS).  SDCC does not zero BSS on z80,
+        ;; so this clear is what guarantees zero-initialised statics actually
+        ;; read zero at boot (e.g. forth.c's did_init).  _DATA currently ends
+        ;; at 0x61D8 (uz80.map); clearing up to the FS base at 0x6400 covers
+        ;; it with ~0.5 KiB of headroom and stops short of the filesystem.
         ld      hl, #0x6000
         ld      de, #0x6001
-        ld      bc, #0x00ff
+        ld      bc, #0x03ff
         ld      (hl), #0x00
         ldir
 
@@ -108,25 +113,9 @@ _kbd_scan:
         ret
 
         ;; ─────────────────────────────────────────────────────────────────
-        ;; beep_tone(uint16_t cycles, uint16_t half) — square wave on the
-        ;; ULA speaker.  Toggles bit 4 of port 0xFE every `half` Z80 loops,
-        ;; for `cycles` periods.  Pure 1-bit audio, exactly the way every
-        ;; Spectrum game does it (the BEEP ROM routine, demystified).
-        ;;
-        ;; SDCC default (stack) calling convention on z80:
-        ;;   sp+0: return address
-        ;;   sp+2: cycles  (lo, hi)
-        ;;   sp+4: half    (lo, hi)
-        ;; The 50 Hz ISR would skew timing — we disable interrupts inside
-        ;; the loop and re-enable at the end.
+        ;; beep_tone() lives in C (see kernel.c): SDCC owns the stack frame,
+        ;; the bit-flip + OUT (0xFE) are the only inline asm there.  Nothing
+        ;; about the beeper remains in crt0 — no scratch byte, no equ.
         ;; ─────────────────────────────────────────────────────────────────
-        ;; Scratch lives at 0x600A (RAM!).  Putting it in .area _CODE puts
-        ;; it in the ROM image, where writes are silently dropped on real
-        ;; hardware — the inner loop would then read zero and never time
-        ;; out.  RAM at 0x600A is inside our zeroed scratch (0x6000..60FF)
-        ;; and known free.
-        .equ    BEEP_HALF, 0x600A
-
-;; (beep_tone now lives in C — see kernel.c)
 
         .area   _DATA

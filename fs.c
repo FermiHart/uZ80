@@ -20,9 +20,13 @@
 
 #include "uz80.h"
 
-/* Place the filesystem at 0x6100 so it survives across resets in emulation
- * (and so cold-boot puts it in known RAM on real hardware). */
-static fs_file_t *const FS = (fs_file_t *)0x6100;
+/* Place the filesystem at 0x6400 — safely above the SDCC _DATA segment.
+ * _DATA starts at --data-loc (0x6010) and currently measures 456 bytes
+ * (0x6010..0x61D8 per uz80.map); 0x6400 leaves ~1 KiB of headroom for the
+ * C statics to grow before they could reach the FS.  Verified against the
+ * build map — see the memory layout + the resolved collision note in
+ * uz80.h.  FS spans 0x6400..0x74D0 (16 * 269 B), clear of uForth @0x8000. */
+static fs_file_t *const FS = (fs_file_t *)0x6400;
 
 /* ── small string helpers (no libc) ──────────────────────────────────────── */
 static uint8_t streq_n(const char *a, const char *b, uint8_t n)
@@ -61,9 +65,11 @@ fs_file_t *fs_iter(uint8_t i)
 fs_file_t *fs_create(const char *name)
 {
     uint8_t i;
+    fs_file_t *existing;
     if (!name || !name[0] || strlen_n(name, FS_NAMEMAX) >= FS_NAMEMAX)
         return 0;
-    if (fs_find(name)) return fs_find(name);
+    existing = fs_find(name);
+    if (existing) return existing;
     for (i = 0; i < FS_FILEMAX; i++) {
         if (!FS[i].name[0]) {
             strcpy_n(FS[i].name, name, FS_NAMEMAX);
