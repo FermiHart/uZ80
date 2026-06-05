@@ -175,7 +175,7 @@ static void cmd_whoami(char *arg){ (void)arg; tty_puts("root\n"); }
 static void cmd_uname(char *arg)
 {
     if (*arg == '-' && arg[1] == 'a')
-        tty_puts("uz80 fermihart 2.0 z80 (16k rom) bear-libcs\n");
+        tty_puts("uz80 fermihart 2.0 z80 (16k rom) no-libc\n");
     else
         tty_puts("uz80\n");
 }

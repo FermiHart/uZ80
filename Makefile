@@ -2,7 +2,7 @@
 # ║                                                                           ║
 # ║   ╦ ╦╔═╗╔═╗ ╔═╗     UZ80 · a z80 micro-kernel, compiled C ──▶ ROM          ║
 # ║   ║ ║╔═╝╠═╣ ║ ║     build · run · shot · demo                              ║
-# ║   ╚═╝╚═╝╩ ╩ ╚═╝     built from Bear Libcs                                  ║
+# ║   ╚═╝╚═╝╩ ╩ ╚═╝     built with SDCC · runs on a Bear Libcs emulator        ║
 # ║                                                                           ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 #

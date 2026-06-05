@@ -17,6 +17,11 @@ data/
 # screenshots saved by `make shot` / `make demo` if BUILD is in-tree
 *.jpg
 *.png
+# ...but the curated gallery under docs/ is versioned on purpose
+!docs/screenshots/*.jpg
 
 # macOS
 .DS_Store
+
+# scratch dir for staging screenshots before curating into docs/
+.gallery-tmp/

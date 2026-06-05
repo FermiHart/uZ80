@@ -12,7 +12,7 @@ with not one byte of glibc. None of that was the plan.
 ```
                   UZ80
            Z80 MICRO-KERNEL
-         BUILT FROM BEAR LIBCS
+       FREESTANDING · NO LIBC
 
         F E R M I  ∞  H A R T
 
@@ -102,16 +102,19 @@ beside it — the Z80 resets to `0x0000` and runs *this*:
 
 What it does when you boot it:
 
-- paints a banner and a prompt — `uz80 $`
+- paints a boot splash and a prompt — `$`
 - **reads the keyboard** straight off the Spectrum matrix
 - **blinks the cursor** off the 50 Hz hardware interrupt — a real clock, not a
   delay loop
-- keeps a **live uptime counter** in the corner, incremented by that same ISR
-- runs built-in commands: `HELP`, `INFO`, `TIME`, `BEAR`, `CLEAR`, with
-  backspace (CAPS SHIFT + 0, the Spectrum's DELETE)
+- keeps a **live uptime counter** in the status bar, incremented by that same ISR
+- runs ~30 built-in commands: a small UNIX-flavoured shell (`ls`, `cat`, `cp`,
+  `mv`, `rm`, `wc`, `echo … > file`) over an in-RAM filesystem, plus `help`,
+  `history`, `uptime`, `cowsay`, `fortune`, `bear`, `play`, with backspace
+  (CAPS SHIFT + 0, the Spectrum's DELETE) and UP/DOWN command history
+- ships **uForth** — a tiny Forth (Jupiter Ace tribute): colon definitions,
+  `IF/ELSE/THEN`, `BEGIN/UNTIL`, `VARIABLE`, and a `SEE` decompiler
 
-It currently uses **~2.1 KiB of the 16 KiB ROM**. There is a *lot* of room
-left.
+It currently uses **~14 KiB of the 16 KiB ROM** (85%).
 
 ---
 
@@ -145,9 +148,32 @@ make help
 
 ```
 crt0.s     reset vector · 50 Hz IM 1 ISR · keyboard scan   (Z80 asm)
-kernel.c   font · screen · keyboard decode · shell         (C, SDCC)
+kernel.c   boot splash · status bar · beeper · main loop   (C, SDCC)
+tty.c      thirds-interleaved framebuffer · line editor · history
+font.c     hand-drawn 5×7 bitmap font, ASCII 32..127
+fs.c       in-RAM filesystem (16 slots, 256 B each)
+cmd.c      the shell — ~30 built-in commands + dispatch table
+forth.c    uForth — tokeniser, compiler, threaded inner interpreter
+uz80.h     shared types, the memory map, and subsystem contracts
 Makefile   C ▶ ROM pipeline, plus run/shot/demo automation
 ```
+
+## Gallery
+
+Every shot below is a real boot in `qemu-system-z80`, captured with `make demo`.
+
+| | |
+|---|---|
+| ![boot + motd](docs/screenshots/cat-motd.jpg) | ![help](docs/screenshots/help.jpg) |
+| *boot splash, status bar, and `/motd`* | *`help` — the full command set* |
+| ![uForth demo](docs/screenshots/forthdemo.jpg) | ![uForth REPL](docs/screenshots/forth-repl.jpg) |
+| *`forthdemo` — IF/THEN, BEGIN/UNTIL, VARIABLE, SEE* | *the live `forth` REPL: `10 20 add .` → 30, `words`* |
+| ![history](docs/screenshots/history.jpg) | ![ls](docs/screenshots/ls.jpg) |
+| *`history` — real numbered recall* | *`ls` over the in-RAM filesystem* |
+| ![cowsay](docs/screenshots/cowsay.jpg) | ![bear](docs/screenshots/bear.jpg) |
+| *`cowsay uz80`* | *`bear` — Bear Libcs tribute banner* |
+| ![fortune](docs/screenshots/fortune.jpg) | ![uptime](docs/screenshots/uptime.jpg) |
+| *`fortune` — LFSR-picked quote* | *`uptime` off the 50 Hz ISR* |
 
 ## Credits & license
 
