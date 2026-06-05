@@ -321,6 +321,22 @@ static void cmd_forthdemo(char *arg)
     forth_eval("def sq dup mul end  7 sq print cr");
     tty_puts("> def cube dup sq mul end  3 cube print cr\n");
     forth_eval("def cube dup sq mul end  3 cube print cr");
+    /* conditional: IF / THEN compiled into a colon word */
+    tty_puts("> def abs dup 0 < if negate then end\n");
+    forth_eval("def abs dup 0 < if negate then end");
+    tty_puts("> -7 abs print cr   ( expect 7 )\n");
+    forth_eval("-7 abs print cr");
+    /* loop: BEGIN / UNTIL countdown */
+    tty_puts("> def cd begin dup print 1 - dup 0 = until drop end\n");
+    forth_eval("def cd begin dup print 1 - dup 0 = until drop end");
+    tty_puts("> 5 cd cr   ( expect 5 4 3 2 1 )\n");
+    forth_eval("5 cd cr");
+    /* variable: define, store, fetch */
+    tty_puts("> variable counter  42 counter !  counter @ print cr\n");
+    forth_eval("variable counter  42 counter !  counter @ print cr");
+    /* see: decompile a defined word */
+    tty_puts("> see abs\n");
+    forth_eval("see abs");
     tty_puts("stack now: ");
     forth_eval("stack");
 }

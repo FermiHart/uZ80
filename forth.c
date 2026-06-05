@@ -26,7 +26,16 @@
  *  Public commands (cmd.c):
  *    forth                — drop into the uForth REPL.  `bye` to leave.
  *
- *  ~35 primitives, : ; IF ELSE THEN BEGIN UNTIL VARIABLE @ ! WORDS SEE BYE.
+ *  Primitives: arithmetic, comparison, stack (dup drop swap over rot tuck
+ *  nip), memory (@ ! c@ c!), I/O (. .s cr emit space), return-stack
+ *  (>r r> r@), words, bye, exit.  Outer-interpreter immediates, handled
+ *  in interpret_line so they can touch the tokeniser and dictionary:
+ *    : ; (def end)   colon definitions
+ *    IF ELSE THEN    forward conditionals  (compile-only)
+ *    BEGIN UNTIL     backward loops        (compile-only)
+ *    VARIABLE        define a named cell pushing its address
+ *    SEE             decompile a defined word
+ *  Every advertised word is implemented — `words` lists the full set.
  *
  *  Author: F E R M I ∞ H A R T <contact@fermihart.com>
  *  SPDX-License-Identifier: Unlicense
@@ -65,10 +74,10 @@ enum {
     P_EQ, P_LT, P_GT,
     P_DUP, P_DROP, P_SWAP, P_OVER, P_ROT, P_TUCK, P_NIP,
     P_FETCH, P_STORE, P_CFETCH, P_CSTORE,
-    P_DOT, P_DOTS, P_CR, P_EMIT, P_SPACE, P_KEY,
+    P_DOT, P_DOTS, P_CR, P_EMIT, P_SPACE,
     P_BRANCH, P_ZBRANCH,
     P_TORS, P_FROMRS, P_RFETCH,
-    P_VARIABLE, P_WORDS, P_SEE, P_FORGET, P_BYE,
+    P_WORDS, P_BYE,
     P_EXIT,
     /* one-byte sentinel for "this colon-def body ends here" — same as EXIT */
     P_LAST
@@ -148,11 +157,29 @@ static const prim_t PRIMS[] = {
     { "r@",     P_RFETCH,  0 },
     /* misc */
     { "words",  P_WORDS,   0 },
-    { "see",    P_SEE,     0 },
     { "bye",    P_BYE,     0 },
     { "exit",   P_EXIT,    0 },
     { 0, 0, 0 }
 };
+
+/* Compile-only / interpreter-side immediate words.  These are handled
+ * directly by the outer interpreter (interpret_line) rather than by the
+ * primitive dispatch, because they consume input or rewrite the
+ * dictionary.  Listed here so `words` can advertise them honestly. */
+static const char *IMMS[] = {
+    ":", ";", "if", "else", "then", "begin", "until", "variable", "see", 0
+};
+
+/* Compile-time control-flow stack: holds the dictionary addresses of the
+ * branch offset fields awaiting back-patching by ELSE / THEN / UNTIL.
+ * Offsets are stored relative to the offset field itself, matching the
+ * `ip += off` convention in execute_body (ip points at the offset when the
+ * branch opcode is decoded). */
+#define CF_MAX 16
+static uint8_t *CFSTK[CF_MAX];
+static uint8_t  CFSP;
+static void     cf_push(uint8_t *p) { if (CFSP < CF_MAX) CFSTK[CFSP++] = p; }
+static uint8_t *cf_pop(void)        { return CFSP ? CFSTK[--CFSP] : 0; }
 
 /* ── dictionary search ──────────────────────────────────────────────────── */
 /* Header layout: link[2] flags[1] nlen[1] name[nlen] body... */
@@ -275,7 +302,6 @@ static void run_prim(uint8_t op)
     case P_CR:     tty_putc('\n'); break;
     case P_EMIT:   a = pop(); tty_putc((char)a); break;
     case P_SPACE:  tty_putc(' '); break;
-    case P_KEY:    push(0); break;     /* not wired in REPL mode */
     case P_TORS:   rpush(pop()); break;
     case P_FROMRS: push(rpop()); break;
     case P_RFETCH: push(*(RSP - 1)); break;
@@ -298,6 +324,18 @@ static void run_prim(uint8_t op)
                              uint8_t n = 0; while (PRIMS[k].name[n]) n++;
                              if (col + n + 1 > COLS) { tty_putc('\n'); col = 0; }
                              tty_puts(PRIMS[k].name); tty_putc(' ');
+                             col = (uint8_t)(col + n + 1);
+                         }
+                         if (col) tty_putc('\n');
+                     }
+                     /* and the immediate / control-flow words */
+                     col = 0;
+                     {
+                         uint8_t k;
+                         for (k = 0; IMMS[k]; k++) {
+                             uint8_t n = 0; while (IMMS[k][n]) n++;
+                             if (col + n + 1 > COLS) { tty_putc('\n'); col = 0; }
+                             tty_puts(IMMS[k]); tty_putc(' ');
                              col = (uint8_t)(col + n + 1);
                          }
                          if (col) tty_putc('\n');
@@ -382,27 +420,143 @@ static void interpret_token(void)
     tty_puts(token); tty_puts(" ?\n");
 }
 
-/* The compile-mode immediates (':' and ';') are handled inline here rather
- * than going through the primitive table so they have access to the
- * tokeniser and the dictionary. */
+/* ── token / keyword match (case-insensitive, length-exact) ─────────────── */
+static uint8_t tok_is(const char *kw)
+{
+    uint8_t n = 0; while (kw[n]) n++;
+    return (n == tlen) && fstr_eq(kw, token, tlen);
+}
+
+/* reverse opcode → name (first match wins, e.g. "+" before "add") */
+static const char *prim_name(uint8_t op)
+{
+    uint8_t i;
+    for (i = 0; PRIMS[i].name; i++)
+        if (PRIMS[i].op == op) return PRIMS[i].name;
+    return 0;
+}
+
+/* ── SEE: decompile a colon body back to readable tokens ────────────────── */
+static void see_word(uint8_t *body)
+{
+    uint8_t *ip = body;
+    for (;;) {
+        uint8_t op = *ip++;
+        if (op == P_EXIT)  { tty_puts(";\n"); return; }
+        if (op == P_LIT)   { cell_t v = *(cell_t *)ip; ip += 2;
+                             put_num(v); tty_putc(' '); continue; }
+        if (op == P_BRANCH){ int16_t o = *(int16_t *)ip; ip += 2;
+                             tty_puts("branch("); put_num(o); tty_puts(") ");
+                             continue; }
+        if (op == P_ZBRANCH){int16_t o = *(int16_t *)ip; ip += 2;
+                             tty_puts("?branch("); put_num(o); tty_puts(") ");
+                             continue; }
+        if (op == 0xFF)    { uint8_t *t = *(uint8_t **)ip; ip += 2;
+                             uint8_t *p = LATEST;
+                             const char *nm = 0; uint8_t nl = 0;
+                             while (p) { if (HDR_BODY(p) == t) {
+                                 nm = HDR_NAME(p); nl = HDR_NLEN(p); break; }
+                                 p = HDR_LINK(p); }
+                             if (nm) { uint8_t i; for (i = 0; i < nl; i++)
+                                           tty_putc(nm[i]); }
+                             else tty_puts("?call");
+                             tty_putc(' '); continue; }
+        { const char *nm = prim_name(op);
+          if (nm) tty_puts(nm); else tty_putc('?');
+          tty_putc(' '); }
+    }
+}
+
+/* The compile-mode immediates (':' / ';' / IF / ELSE / THEN / BEGIN / UNTIL)
+ * and the defining/inspecting words (VARIABLE / SEE) are handled inline here
+ * rather than through the primitive table so they have access to the
+ * tokeniser, the dictionary, and the compile-time control-flow stack. */
 static void interpret_line(const char *line)
 {
     INP = line;
     while (next_token()) {
         /* ':' (or alphabetic alias `def`) starts a colon definition */
-        if ((tlen == 1 && token[0] == ':') ||
-            (tlen == 3 && fstr_eq(token, "def", 3))) {
+        if (tok_is(":") || tok_is("def")) {
             if (!next_token()) { tty_puts(": expects a name\n"); return; }
             create_header(token, tlen);
             STATE = 1;
             continue;
         }
-        if ((tlen == 1 && token[0] == ';') ||
-            (tlen == 3 && fstr_eq(token, "end", 3))) {
+        if (tok_is(";") || tok_is("end")) {
             comma_b(P_EXIT);
             STATE = 0;
             continue;
         }
+
+        /* ── forward conditional: IF ... [ELSE ...] THEN ── compile-only ── */
+        if (tok_is("if")) {
+            if (!STATE) { tty_puts("if: compile-only\n"); return; }
+            comma_b(P_ZBRANCH);
+            cf_push(HERE);          /* offset field awaiting THEN/ELSE     */
+            comma_c(0);
+            continue;
+        }
+        if (tok_is("else")) {
+            uint8_t *zslot;
+            if (!STATE) { tty_puts("else: compile-only\n"); return; }
+            comma_b(P_BRANCH);      /* jump over the false-branch          */
+            { uint8_t *bslot = HERE; comma_c(0);
+              zslot = cf_pop();     /* the IF's ?branch                    */
+              if (zslot) *(int16_t *)zslot = (int16_t)(HERE - zslot);
+              cf_push(bslot); }     /* THEN will patch this BRANCH         */
+            continue;
+        }
+        if (tok_is("then")) {
+            uint8_t *slot;
+            if (!STATE) { tty_puts("then: compile-only\n"); return; }
+            slot = cf_pop();
+            if (slot) *(int16_t *)slot = (int16_t)(HERE - slot);
+            continue;
+        }
+
+        /* ── backward loop: BEGIN ... UNTIL ── compile-only ───────────── */
+        if (tok_is("begin")) {
+            if (!STATE) { tty_puts("begin: compile-only\n"); return; }
+            cf_push(HERE);          /* loop-top target                     */
+            continue;
+        }
+        if (tok_is("until")) {
+            uint8_t *top;
+            if (!STATE) { tty_puts("until: compile-only\n"); return; }
+            comma_b(P_ZBRANCH);     /* false → jump back to BEGIN          */
+            { uint8_t *slot = HERE; comma_c(0);
+              top = cf_pop();
+              if (top) *(int16_t *)slot = (int16_t)(top - slot); }
+            continue;
+        }
+
+        /* ── VARIABLE name ── define a word that pushes its cell address ─ */
+        if (tok_is("variable")) {
+            uint8_t *slot;
+            if (!next_token()) { tty_puts("variable: needs a name\n"); return; }
+            create_header(token, tlen);
+            comma_b(P_LIT);
+            slot = HERE; comma_c(0);            /* address, patched below  */
+            comma_b(P_EXIT);
+            *(int16_t *)slot = (int16_t)(uintptr_t)HERE;  /* data cell      */
+            comma_c(0);                          /* the cell, initial 0     */
+            continue;
+        }
+
+        /* ── SEE name ── decompile a defined word ───────────────────────── */
+        if (tok_is("see")) {
+            uint8_t *w;
+            if (!next_token()) { tty_puts("see: needs a name\n"); return; }
+            w = find_word(token, tlen);
+            if (!w) { tty_puts("see: not a defined word\n"); return; }
+            tty_puts(": ");
+            { uint8_t i; for (i = 0; i < HDR_NLEN(w); i++)
+                  tty_putc(HDR_NAME(w)[i]); }
+            tty_putc(' ');
+            see_word(HDR_BODY(w));
+            continue;
+        }
+
         interpret_token();
     }
 }
@@ -417,6 +571,7 @@ static void forth_init(void)
     HERE   = (uint8_t *)DICT_BASE;
     LATEST = 0;
     STATE  = 0;
+    CFSP   = 0;
     did_init = 1;
 }
 
