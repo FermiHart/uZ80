@@ -1,0 +1,54 @@
+name: proof
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: proof-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Build versioned toolchain
+        run: docker build --tag uz80-toolchain:sdcc-4.2 .
+
+      - name: Run host and ROM proofs
+        run: |
+          mkdir -p "$RUNNER_TEMP/uz80-output"
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --network none \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev \
+            --mount "type=bind,source=$PWD,target=/src,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP/uz80-output,target=/work" \
+            uz80-toolchain:sdcc-4.2 \
+            make -C /src BUILD=/work/build check
+
+      - name: Record artifact digest
+        run: sha256sum "$RUNNER_TEMP/uz80-output/build/uz80.rom"
+
+      - name: Upload validated build evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: uz80-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/uz80-output/build/uz80.rom
+            ${{ runner.temp }}/uz80-output/build/uz80.ihx
+            ${{ runner.temp }}/uz80-output/build/uz80.map
+          if-no-files-found: error
+          retention-days: 14

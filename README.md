@@ -1,7 +1,9 @@
-# UZ80
+# uZ80
 
-**A Z80 micro-kernel I compiled into a 16 KiB ROM — and the rabbit hole I fell
-into to get there.**
+[![proof](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml/badge.svg)](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml)
+
+**A freestanding 16 KiB Z80 monitor ROM with a UNIX-flavoured shell and a
+small Forth.**
 
 This is a lab diary. It is written in the order things actually happened,
 including the parts where I was wrong. If you want the short version: I have a
@@ -87,18 +89,16 @@ Bear Libcs, and runs the CPU. I fed it the real 48K Spectrum ROM and watched
 I had an emulator on my Bear Libcs. I wanted my own code running *on the Z80*. So I
 wrote a kernel.
 
-**UZ80** is a bare-metal ZX Spectrum boot ROM, written in C, compiled with
+**uZ80** is a bare-metal ZX Spectrum boot ROM, written in C, compiled with
 **SDCC** to a 16 KiB image. There is no operating system under it and no libc
 beside it — the Z80 resets to `0x0000` and runs *this*:
 
 - `crt0.s` — the reset vector. Sets the stack, zeroes RAM scratch, installs
   `IM 1` so the ULA's 50 Hz frame interrupt vectors through `0x0038`, calls
   `main()`. It also has the keyboard-matrix scan routine.
-- `kernel.c` — a 5×7 font I hand-drew bit by bit (A–Z, 0–9, lowercase, an `∞`
-  glyph that spent its first build looking like an asterisk); the ZX Spectrum
-  screen routines (that gloriously deranged thirds-interleaved framebuffer
-  layout); a keyboard decoder over the real `IN (0xFE)` half-row matrix; and a
-  tiny shell.
+- `kernel.c` wires boot, status, sound and the shell loop. The font, terminal,
+  keyboard decoder, filesystem, command table and Forth VM are separate small
+  modules with explicit contracts in `uz80.h`.
 
 What it does when you boot it:
 
@@ -106,7 +106,8 @@ What it does when you boot it:
 - **reads the keyboard** straight off the Spectrum matrix
 - **blinks the cursor** off the 50 Hz hardware interrupt — a real clock, not a
   delay loop
-- keeps a **live uptime counter** in the status bar, incremented by that same ISR
+- shows frame-derived uptime sampled between commands; the current 16-bit clock
+  wraps after about 21m51s and is scheduled for replacement
 - runs ~30 built-in commands: a small UNIX-flavoured shell (`ls`, `cat`, `cp`,
   `mv`, `rm`, `wc`, `echo … > file`) over an in-RAM filesystem, plus `help`,
   `history`, `uptime`, `cowsay`, `fortune`, `bear`, `play`, with backspace
@@ -114,7 +115,8 @@ What it does when you boot it:
 - ships **uForth** — a tiny Forth (Jupiter Ace tribute): colon definitions,
   `IF/ELSE/THEN`, `BEGIN/UNTIL`, `VARIABLE`, and a `SEE` decompiler
 
-It currently uses **~14 KiB of the 16 KiB ROM** (85%).
+The SDCC 4.2.0 build currently occupies **14,657 of 16,384 bytes** (89%).
+`make check` fails if any emitted byte crosses the ROM boundary.
 
 ---
 
@@ -131,11 +133,14 @@ and standard enough that I expect it to just work.
 
 ## Build it
 
-Needs `sdcc` (compiler) and a Linux host. Builds out-of-tree, so a read-only
-source checkout is fine.
+The native build needs SDCC 4.2.0 (`sdcc`, `sdasz80`, `makebin`), GNU Make,
+Python 3 and a C compiler for host regressions. Output defaults to `build/`;
+set `BUILD=/some/path` for a read-only checkout.
 
 ```sh
-make            # C ──sdcc──▶ .ihx ──makebin──▶ uz80.rom  (16 KiB)
+make            # build and validate build/uz80.rom (exactly 16 KiB)
+make test       # host tests under ASan/UBSan + validator regressions
+make check      # tests + ROM/RAM gates + two-build reproducibility proof
 make run        # build + boot in qemu-system-z80, VNC on :5948
 make shot       # build + boot headless + screenshot
 make demo       # build + boot + type a command + screenshot
@@ -143,24 +148,60 @@ make help
 ```
 
 `make demo DEMO="h e l p ret"` types a different command at the prompt.
+`run`, `shot` and `demo` require the external qemu-z80 fork and keymaps; set
+`QEMU=` and `KEYMAPS=` to their paths. VNC is explicitly loopback-bound.
+
+For a repository-defined SDCC 4.2.0 environment instead of host packages:
+
+```sh
+docker build -t uz80-toolchain:sdcc-4.2 .
+mkdir -p .container-work
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD:/src:ro" -v "$PWD/.container-work:/work" \
+  uz80-toolchain:sdcc-4.2 \
+  make -C /src BUILD=/work/build check
+```
+
+## What `make check` proves
+
+- Intel HEX records have valid lengths and checksums.
+- Every emitted byte is below `0x4000` and exactly matches the final ROM.
+- `_DATA` starts at `0x6010`, ends before the filesystem at `0x6400`, and no
+  unsupported `_INITIALIZER` data is silently lost by the custom CRT.
+- Host shell/filesystem, keyboard-shift and editor-boundary regressions pass
+  with AddressSanitizer and UndefinedBehaviorSanitizer.
+- Two clean builds produce byte-identical ROMs.
+
+This is still emulator-tested, not physical-hardware-proven. The Docker base
+image and direct SDCC package are fixed, but Ubuntu's apt dependency indexes are
+not snapshot-pinned, so the environment is not yet hermetic across time. The
+custom qemu-z80 fork is also not pinned or exercised in CI, and uForth's
+malformed program/error paths need a dedicated hardening wave. See
+[ROADMAP.md](ROADMAP.md).
 
 ## Layout
 
 ```
 crt0.s     reset vector · 50 Hz IM 1 ISR · keyboard scan   (Z80 asm)
 kernel.c   boot splash · status bar · beeper · main loop   (C, SDCC)
+keyboard.c Spectrum matrix · CAPS/SYMBOL layers
+editor.c   pure line-capacity contract
 tty.c      thirds-interleaved framebuffer · line editor · history
 font.c     hand-drawn 5×7 bitmap font, ASCII 32..127
-fs.c       in-RAM filesystem (16 slots, 256 B each)
+fs.c       in-RAM filesystem (16 slots, 255-byte text payloads)
 cmd.c      the shell — ~30 built-in commands + dispatch table
 forth.c    uForth — tokeniser, compiler, threaded inner interpreter
 uz80.h     shared types, the memory map, and subsystem contracts
-Makefile   C ▶ ROM pipeline, plus run/shot/demo automation
+tools/     fail-closed map/IHX/ROM validator
+tests/     host regressions and build-system contracts
+Makefile   build, proof, reproducibility and emulator automation
+Dockerfile versioned SDCC build environment
 ```
 
 ## Gallery
 
-Every shot below is a real boot in `qemu-system-z80`, captured with `make demo`.
+Every shot below records a real boot in `qemu-system-z80`. The gallery predates
+the proof pipeline and does not yet carry per-image command or commit metadata.
 
 | | |
 |---|---|

@@ -146,19 +146,6 @@ void tty_init(void)
 }
 
 /* ── keyboard ─────────────────────────────────────────────────────────────── */
-/* Spectrum matrix: 8 half-rows of 5 keys.  0 = a modifier; we read CAPS
- * SHIFT and SYMBOL SHIFT explicitly. */
-static const char KEYMAP[40] = {
-    0 ,'z','x','c','v',          /* 0xFEFE   CAPS,Z,X,C,V       */
-   'a','s','d','f','g',          /* 0xFDFE                      */
-   'q','w','e','r','t',          /* 0xFBFE                      */
-   '1','2','3','4','5',          /* 0xF7FE                      */
-   '0','9','8','7','6',          /* 0xEFFE                      */
-   'p','o','i','u','y',          /* 0xDFFE                      */
-    13,'l','k','j','h',          /* 0xBFFE   ENTER at [0]       */
-   ' ', 0 ,'m','n','b',          /* 0x7FFE   SPACE, SYM-SHIFT   */
-};
-
 /* Special CAPS-SHIFT combos (CAPS = row 0 bit 0).
  *   CAPS+0 = BACKSPACE   (row 4 bit 0 → '0')
  *   CAPS+5 = LEFT        (row 3 bit 4 → '5')      [not yet wired]
@@ -166,50 +153,21 @@ static const char KEYMAP[40] = {
  *   CAPS+7 = UP          (row 4 bit 3 → '7')
  *   CAPS+8 = RIGHT       (row 4 bit 2 → '8')      [not yet wired]
  *   CAPS+1 = EDIT/clear  (row 3 bit 0 → '1')      [we map to ^U: clear line]
- *   SYM+P  = '"'         (row 7 bit 1 → 'm')      [not yet wired]
+ * SYMBOL SHIFT punctuation and CAPS letters are decoded in keyboard.c.
  */
 #define K_BS    8
 #define K_UP    11
 #define K_DOWN  10
 #define K_KILL  21    /* ^U */
 
-/* Decode one freshly-scanned matrix into a single keycode (or 0).  We
- * track edge-detection in a global so holding a key yields one event. */
+/* We track edge-detection in a global so holding a key yields one event. */
 static uint8_t kb_down;
-
-static char decode(void)
-{
-    uint8_t r, b, caps;
-    char    base = 0;
-
-    caps = !(UZ_KBD_ROW(0) & 0x01);            /* CAPS SHIFT held? */
-
-    for (r = 0; r < 8; r++) {
-        uint8_t v = UZ_KBD_ROW(r);
-        for (b = 0; b < 5; b++) {
-            if (((v >> b) & 1) == 0) {         /* 0 = pressed */
-                char k = KEYMAP[r * 5 + b];
-                if (k) base = k;
-            }
-        }
-    }
-    if (!base) return 0;
-
-    if (caps) {
-        if (base == '0') return K_BS;
-        if (base == '6') return K_DOWN;
-        if (base == '7') return K_UP;
-        if (base == '1') return K_KILL;
-        /* other caps-combos: ignore the shift, return the base */
-    }
-    return base;
-}
 
 static char poll_key(void)
 {
     char c;
     kbd_scan();
-    c = decode();
+    c = keyboard_decode();
     if (c) {
         if (kb_down) return 0;
         kb_down = 1;
@@ -238,7 +196,8 @@ static void redraw_line(const char *buf, uint8_t len,
     }
     /* erase any trailing chars from a previous longer history entry */
     while (cx < COLS) { blit(cx, cy, 0); cx++; }
-    cx = start_x + len;
+    cx = (uint8_t)(start_x + len);
+    if (cx >= COLS) cx = COLS - 1;
     cy = start_y;
 }
 
@@ -267,12 +226,18 @@ const char *tty_hist_get(uint8_t back)  { return hist_get(back); }
 
 void tty_readline(char *buf, uint8_t cap)
 {
-    uint8_t  start_x = cx, start_y = cy;
+    uint8_t  start_x, start_y;
     uint8_t  len = 0;
+    uint8_t  limit;
     uint8_t  hi  = 0;                        /* 0 = current edit; 1..n = history */
     uint8_t  i;
     uint16_t last_blink = 0xFFFF;
 
+    if (!buf || !cap) return;
+    if (editor_start_needs_wrap(cx)) newline();
+    start_x = cx;
+    start_y = cy;
+    limit = editor_line_limit(start_x, cap);
     buf[0] = 0;
 
     for (;;) {
@@ -312,17 +277,17 @@ void tty_readline(char *buf, uint8_t cap)
             if (k == K_UP)        { if (hi < hist_n) hi++; }
             else /* K_DOWN */     { if (hi)          hi--; }
             h = hist_get(hi);
-            for (i = 0; i < cap - 1 && h[i]; i++) buf[i] = h[i];
+            for (i = 0; i < limit && h[i]; i++) buf[i] = h[i];
             buf[i] = 0; len = i;
             redraw_line(buf, len, start_x, start_y);
             continue;
         }
-        if (k >= 0x20 && k < 0x7F && len < cap - 1
-                                  && (uint8_t)(start_x + len) < COLS - 1) {
+        if (k >= 0x20 && k < 0x7F && len < limit) {
             cx = start_x + len; cy = start_y;
             blit(cx, cy, gi_of(k));
             buf[len++] = k;
             buf[len]   = 0;
+            cx = (uint8_t)(start_x + len);
         }
     }
 }

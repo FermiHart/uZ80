@@ -2,7 +2,8 @@
  *
  *  UZ80 · fs.c — a tiny in-RAM filesystem
  *
- *  Sixteen slots, fixed-size names (12 chars) and contents (256 bytes).
+ *  Sixteen slots, 11-character names and 255-byte text payloads. Storage uses
+ *  a 12-byte NUL-terminated name field and a 256-byte data field per slot.
  *  Everything lives in a single static array; there is no directory tree,
  *  no permissions, no metadata.  Lives in RAM, dies on power-off.
  *
@@ -21,12 +22,22 @@
 #include "uz80.h"
 
 /* Place the filesystem at 0x6400 — safely above the SDCC _DATA segment.
- * _DATA starts at --data-loc (0x6010) and currently measures 456 bytes
- * (0x6010..0x61D8 per uz80.map); 0x6400 leaves ~1 KiB of headroom for the
+ * _DATA starts at --data-loc (0x6010) and currently measures 438 bytes
+ * ([0x6010,0x61C6) per uz80.map); 0x6400 leaves 570 bytes for the
  * C statics to grow before they could reach the FS.  Verified against the
  * build map — see the memory layout + the resolved collision note in
- * uz80.h.  FS spans 0x6400..0x74D0 (16 * 269 B), clear of uForth @0x8000. */
-static fs_file_t *const FS = (fs_file_t *)0x6400;
+ * uz80.h. FS spans [0x6400,0x74D0) (16 * 269 B), clear of uForth @0x8000. */
+#ifdef UZ80_HOST_TEST
+static fs_file_t HOST_FS[FS_FILEMAX];
+static fs_file_t *const FS = HOST_FS;
+#else
+static fs_file_t *const FS = (fs_file_t *)UZ_FS_BASE;
+#endif
+
+typedef char fs_layout_fits_before_forth[
+    (UZ_FS_BASE + sizeof(fs_file_t) * FS_FILEMAX <= UZ_FORTH_DSTACK_BASE)
+        ? 1 : -1
+];
 
 /* ── small string helpers (no libc) ──────────────────────────────────────── */
 static uint8_t streq_n(const char *a, const char *b, uint8_t n)
@@ -89,12 +100,17 @@ int8_t fs_delete(const char *name)
     return 0;
 }
 
-void fs_write(fs_file_t *f, const char *text)
+uint8_t fs_write(fs_file_t *f, const char *text)
 {
-    uint8_t i = 0;
-    while (i < FS_DATAMAX - 1 && text[i]) { f->data[i] = (uint8_t)text[i]; i++; }
-    f->data[i] = 0;
-    f->size    = i;
+    uint16_t length = 0;
+    uint16_t i;
+    if (!f || !text) return 0;
+    while (length < FS_DATAMAX && text[length]) length++;
+    if (length == FS_DATAMAX) return 0;
+    for (i = 0; i < length; i++) f->data[i] = (uint8_t)text[i];
+    f->data[length] = 0;
+    f->size = (uint8_t)length;
+    return 1;
 }
 
 /* ── pre-populated content ────────────────────────────────────────────────── */
@@ -113,23 +129,7 @@ static const char FORTUNES[] =
     "\n"
     "simplicity is the ultimate\n"
     "sophistication.\n"
-    "  -- leonardo (and pike)\n"
-    "\n"
-    "controlling complexity is the\n"
-    "essence of computer programming.\n"
-    "  -- brian kernighan\n"
-    "\n"
-    "premature optimization is the\n"
-    "root of all evil.\n"
-    "  -- donald knuth\n"
-    "\n"
-    "unix is simple. it just takes a\n"
-    "genius to understand its simpli-\n"
-    "city. -- dennis ritchie\n"
-    "\n"
-    "strong by default. lean by\n"
-    "design. private by nature.\n"
-    "  -- bear libcs\n";
+    "  -- leonardo (and pike)\n";
 
 static const char README[] =
     "uz80 is a z80 boot rom written\n"
@@ -145,6 +145,11 @@ static const char LICENSE[] =
     "public domain. no warranty.\n"
     "take it, burn it, ship it.\n";
 
+typedef char motd_fits_in_file[(sizeof MOTD <= FS_DATAMAX) ? 1 : -1];
+typedef char fortunes_fit_in_file[(sizeof FORTUNES <= FS_DATAMAX) ? 1 : -1];
+typedef char readme_fits_in_file[(sizeof README <= FS_DATAMAX) ? 1 : -1];
+typedef char license_fits_in_file[(sizeof LICENSE <= FS_DATAMAX) ? 1 : -1];
+
 void fs_init(void)
 {
     uint8_t i;
@@ -153,8 +158,8 @@ void fs_init(void)
         FS[i].name[0] = 0;
         FS[i].size    = 0;
     }
-    fs_write(fs_create("motd"),    MOTD);
-    fs_write(fs_create("readme"),  README);
-    fs_write(fs_create("fortune"), FORTUNES);
-    fs_write(fs_create("license"), LICENSE);
+    (void)fs_write(fs_create("motd"),    MOTD);
+    (void)fs_write(fs_create("readme"),  README);
+    (void)fs_write(fs_create("fortune"), FORTUNES);
+    (void)fs_write(fs_create("license"), LICENSE);
 }

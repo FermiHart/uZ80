@@ -1,5 +1,4 @@
-# build artefacts (Makefile builds out-of-tree into $HOME/.uz80 by default,
-# but if anyone overrides BUILD= to point inside the tree, ignore these)
+# Build artifacts (the default is ./build; BUILD may point elsewhere).
 *.rel
 *.lst
 *.sym
@@ -13,6 +12,9 @@
 *.rst
 build/
 data/
+.container-work/
+__pycache__/
+*.py[cod]
 
 # screenshots saved by `make shot` / `make demo` if BUILD is in-tree
 *.jpg
