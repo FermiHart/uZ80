@@ -14,6 +14,8 @@
 
 #include "uz80.h"
 
+__sfr __at (0xFE) ULA_PORT;
+
 /* ── beep_tone: 1-bit square wave on the ULA speaker (port 0xFE bit 4)
  *
  *  cycles  = number of half-period flips
@@ -32,15 +34,12 @@ void beep_tone(uint16_t cycles, uint16_t half)
          * and silencing the speaker. volatile forces the decrements to stand. */
         volatile uint16_t h = half;
         spk_state ^= 0x10;
-        /* fire the speaker bit + a black border */
-        __asm__("ld   a,(_spk_state)\n"
-                "out  (0xfe),a");
+        ULA_PORT = spk_state;       /* speaker bit plus a black border */
         while (h--) { /* busy wait — kept honest by volatile */ }
     }
     /* leave the speaker line low */
     spk_state = 0;
-    __asm__("xor  a\n"
-            "out  (0xfe),a");
+    ULA_PORT = 0;
 }
 
 /* ── status bar (row 0): "uz80   bear libcs   up Ns" ────────────────────── */
@@ -59,7 +58,7 @@ static void status_redraw(uint16_t secs)
 /* ── boot splash: a chip-tune jingle while the banner unfolds ───────────── */
 static void splash(void)
 {
-    static const char *L[] = {
+    static const char * const L[] = {
         "uz80 booting...",
         "[ok] z80 cpu",
         "[ok] 16k rom",
@@ -91,11 +90,7 @@ void main(void)
     uint16_t       last = 0xFFFF;
     fs_file_t     *motd;
 
-    /* Black border via the ULA port. */
-    __asm
-        xor a
-        out (0xfe), a
-    __endasm;
+    ULA_PORT = 0;                  /* black border */
 
     fs_init();
     tty_init();

@@ -46,14 +46,19 @@
 #include "uz80.h"
 
 /* ── memory carve-out (RAM, after the filesystem) ───────────────────────── */
-/* fs.c uses 0x6100..0x6100+sizeof(fs_file_t)*16 = 0x6100+0x10A0 = 0x71A0
- * We pick 0x8000+ for Forth state — plenty of room until 0xFEFF. */
-#define DSTK_BASE 0x8000          /* data stack grows up — 64 cells          */
-#define DSTK_END  0x8080
-#define RSTK_BASE 0x8080          /* return stack grows up — 64 cells        */
-#define RSTK_END  0x8100
-#define DICT_BASE 0x8100          /* user dictionary grows up — ~24 KiB room */
-#define DICT_END  0xE000
+/* fs.c ends at 0x74D0. Forth starts at 0x8000 and stops below the C stack. */
+#define DSTK_BASE UZ_FORTH_DSTACK_BASE /* data stack grows up — 64 cells     */
+#define DSTK_END  UZ_FORTH_DSTACK_END
+#define RSTK_BASE UZ_FORTH_RSTACK_BASE /* return stack grows up — 64 cells   */
+#define RSTK_END  UZ_FORTH_RSTACK_END
+#define DICT_BASE UZ_FORTH_DICT_BASE   /* user dictionary — ~24 KiB room     */
+#define DICT_END  UZ_FORTH_DICT_END
+
+typedef char forth_layout_is_ordered[
+    (DSTK_BASE < DSTK_END && DSTK_END == RSTK_BASE
+     && RSTK_BASE < RSTK_END && RSTK_END == DICT_BASE
+     && DICT_BASE < DICT_END) ? 1 : -1
+];
 
 #define FW_NAMEMAX 12
 
@@ -166,8 +171,9 @@ static const prim_t PRIMS[] = {
  * directly by the outer interpreter (interpret_line) rather than by the
  * primitive dispatch, because they consume input or rewrite the
  * dictionary.  Listed here so `words` can advertise them honestly. */
-static const char *IMMS[] = {
-    ":", ";", "if", "else", "then", "begin", "until", "variable", "see", 0
+static const char * const IMMS[] = {
+    ":", ";", "def", "end", "if", "else", "then", "begin", "until",
+    "variable", "see", 0
 };
 
 /* Compile-time control-flow stack: holds the dictionary addresses of the

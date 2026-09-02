@@ -41,12 +41,12 @@
 init:
         ld      sp, #0xff00             ; stack at top of RAM, below 0xFF00
 
-        ;; Zero 0x6000..0x63FF: kbd buffer, frame counter, and the ENTIRE
+        ;; Zero [0x6000,0x6400): kbd buffer, frame counter, and the ENTIRE
         ;; SDCC _DATA segment (statics/BSS).  SDCC does not zero BSS on z80,
         ;; so this clear is what guarantees zero-initialised statics actually
         ;; read zero at boot (e.g. forth.c's did_init).  _DATA currently ends
-        ;; at 0x61D8 (uz80.map); clearing up to the FS base at 0x6400 covers
-        ;; it with ~0.5 KiB of headroom and stops short of the filesystem.
+        ;; at 0x61C6 exclusive (uz80.map); clearing to the FS base covers
+        ;; it with 570 B of headroom and stops short of the filesystem.
         ld      hl, #0x6000
         ld      de, #0x6001
         ld      bc, #0x03ff

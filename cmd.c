@@ -52,7 +52,11 @@ static uint16_t rnd(void)
 static void cmd_help(char *arg);
 
 static void cmd_clear(char *arg) { (void)arg; tty_clear(); }
+#ifdef UZ80_HOST_TEST
+static void cmd_halt (char *arg) { (void)arg; }
+#else
 static void cmd_halt (char *arg) { (void)arg; __asm di __endasm; for (;;) __asm halt __endasm; }
+#endif
 
 static void cmd_echo(char *arg)
 {
@@ -67,9 +71,14 @@ static void cmd_echo(char *arg)
         { char *p = arg; while (*p) p++;
           while (p > arg && p[-1] == ' ') { *--p = 0; } }
         if (*fname) {
-            fs_file_t *f = fs_create(fname);
-            if (f) fs_write(f, arg);
-            else   tty_puts("echo: cannot open\n");
+            fs_file_t *f = fs_find(fname);
+            uint8_t created = 0;
+            if (!f) { f = fs_create(fname); created = f != 0; }
+            if (!f) tty_puts("echo: cannot open\n");
+            else if (!fs_write(f, arg)) {
+                if (created) (void)fs_delete(fname);
+                tty_puts("echo: file too large\n");
+            }
         }
         return;
     }
@@ -164,6 +173,7 @@ static void cmd_mv(char *arg)
     if (!fa) { tty_puts("mv: no such source\n"); return; }
     fb = fs_create(dst);
     if (!fb) { tty_puts("mv: cannot create dst\n"); return; }
+    if (fa == fb) return;
     for (i = 0; i < fa->size; i++) fb->data[i] = fa->data[i];
     fb->size = fa->size;
     fa->name[0] = 0; fa->size = 0;
