@@ -21,6 +21,7 @@ __pycache__/
 *.png
 # ...but the curated gallery under docs/ is versioned on purpose
 !docs/screenshots/*.jpg
+!docs/screenshots/*.png
 
 # macOS
 .DS_Store

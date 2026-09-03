@@ -2,22 +2,22 @@
 # ║                                                                           ║
 # ║   ╦ ╦╔═╗╔═╗ ╔═╗     UZ80 · a Z80 monitor, compiled C ──▶ ROM               ║
 # ║   ║ ║╔═╝╠═╣ ║ ║     build · run · shot · demo                              ║
-# ║   ╚═╝╚═╝╩ ╩ ╚═╝     built with SDCC · runs on a Bear Libcs emulator        ║
+# ║   ╚═╝╚═╝╩ ╩ ╚═╝     built with SDCC · optional external emulator           ║
 # ║                                                                           ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 #
 #   C source ──sdcc──▶ .ihx (Intel HEX) ──makebin──▶ 16 KiB raw ROM
 #
 #   make         build uz80.rom
-#   make check   run host tests, build validation, and reproducibility proof
-#   make run     build, then boot it in qemu-system-z80 (Bear-hosted)
+#   make check   run host tests, build validation, and determinism proof
+#   make run     build, then boot it in an explicitly configured qemu-z80
 #   make shot    build, boot headless, grab a VNC screenshot
 #   make demo    build, boot, type a command at the prompt, screenshot
 #   make clean   remove the build directory
 #   make help    this message
 #
 #   Build output defaults to ./build.  Override BUILD for a read-only checkout,
-#   or override QEMU / KEYMAPS / VNC / DEMO for emulator automation:
+#   or set QEMU / KEYMAPS / VNC / DEMO for external emulator automation:
 #   make demo DEMO="h e l p ret"
 #
 # Author: F E R M I ∞ H A R T <contact@fermihart.com>
@@ -41,9 +41,9 @@ DATA   := $(BUILD)/data
 BUILD_MARKER := $(BUILD)/.uz80-build
 STAGED_ROM := $(DATA)/zx-rom.bin
 
-# The Bear-hosted emulator and the VNC display number it should serve.
-QEMU    ?= $(HOME)/work/qemu-z80/z80-softmmu/qemu-system-z80-bear
-KEYMAPS ?= $(HOME)/work/qemu-z80/pc-bios/keymaps
+# Emulator artifacts are external and intentionally have no private defaults.
+QEMU    ?=
+KEYMAPS ?=
 VNC     ?= 48
 VNC_HOST ?= 127.0.0.1
 MONPORT ?= 55580
@@ -66,8 +66,8 @@ G := \033[1;32m
 D := \033[0;36m
 Z := \033[0m
 
-.PHONY: all check test host-test reproducible check-tools prepare-build stage \
-	run shot demo clean help
+.PHONY: all check test host-test reproducible check-tools check-emulator \
+	prepare-build stage run shot demo clean help
 .DEFAULT_GOAL := all
 .DELETE_ON_ERROR:
 
@@ -99,6 +99,15 @@ check-tools:
 	        printf 'required tool not found: %s\n' "$$tool" >&2; exit 1; \
 	    }; \
 	done
+
+check-emulator:
+	@test -n "$(QEMU)" || { \
+	    printf 'compatible qemu-z80 emulator is not bundled; set QEMU=/path/to/qemu-system-z80\n' >&2; \
+	    exit 1; \
+	}
+	@command -v "$(QEMU)" >/dev/null 2>&1 || { \
+	    printf 'configured qemu executable not found: %s\n' "$(QEMU)" >&2; exit 1; \
+	}
 
 $(ROM): $(SRCDIR)/crt0.s $(SRCDIR)/uz80.h $(addprefix $(SRCDIR)/,$(CSRC)) \
 		$(SRCDIR)/Makefile $(SRCDIR)/tools/validate_build.py | prepare-build check-tools
@@ -155,6 +164,10 @@ check: test all reproducible
 
 # ── deploy: validate and stage ROM (+ keymaps) for qemu-system-z80 ──────────
 stage: all
+	@test -n "$(KEYMAPS)" || { \
+	    printf 'qemu keymaps are not bundled; set KEYMAPS=/path/to/qemu/keymaps\n' >&2; \
+	    exit 1; \
+	}
 	@test -d "$(KEYMAPS)" || { printf 'qemu keymaps not found: %s\n' "$(KEYMAPS)" >&2; exit 1; }
 	@mkdir -p "$(DATA)/keymaps"
 	@set -e; tmp="$(STAGED_ROM).tmp.$$$$"; \
@@ -164,15 +177,13 @@ stage: all
 	@cp "$(KEYMAPS)"/* "$(DATA)/keymaps/"
 
 # ── run: boot UZ80 interactively (foreground; Ctrl-C to stop) ────────────────
-run: stage
-	@test -x "$(QEMU)" || { printf 'qemu not found: %s\n' "$(QEMU)"; exit 1; }
+run: check-emulator stage
 	@printf '$(G)  RUN$(Z)   UZ80 booting — VNC on localhost:%d  (Ctrl-C to stop)\n' \
 	        $$(( 5900 + $(VNC) ))
 	@"$(QEMU)" -M zxspec48 -vnc "$(VNC_HOST):$(VNC)" -L "$(DATA)"
 
 # ── shot: boot headless and capture the screen ──────────────────────────────
-shot: stage
-	@test -x "$(QEMU)" || { printf 'qemu not found: %s\n' "$(QEMU)"; exit 1; }
+shot: check-emulator stage
 	@command -v vncsnapshot >/dev/null 2>&1 || { printf 'vncsnapshot not found\n' >&2; exit 1; }
 	@set -e; out="$(BUILD)/uz80.jpg"; tmp="$(BUILD)/uz80.jpg.tmp.$$$$"; \
 	 log="$(BUILD)/qemu.log"; pid=; \
@@ -196,8 +207,7 @@ shot: stage
 	 printf '$(G)  SHOT$(Z)  %s\n' "$$out"
 
 # ── demo: boot, type a command at the prompt, screenshot the result ─────────
-demo: stage
-	@test -x "$(QEMU)" || { printf 'qemu not found: %s\n' "$(QEMU)"; exit 1; }
+demo: check-emulator stage
 	@command -v vncsnapshot >/dev/null 2>&1 || { printf 'vncsnapshot not found\n' >&2; exit 1; }
 	@command -v nc >/dev/null 2>&1 || { printf 'nc not found\n' >&2; exit 1; }
 	@set -e; out="$(BUILD)/uz80-demo.jpg"; tmp="$(BUILD)/uz80-demo.jpg.tmp.$$$$"; \

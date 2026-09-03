@@ -1,228 +1,222 @@
+<div align="center">
+
 # uZ80
 
-[![proof](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml/badge.svg)](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml)
+**A freestanding 16 KiB monitor ROM for the ZX Spectrum 48K.**
 
-**A freestanding 16 KiB Z80 monitor ROM with a UNIX-flavoured shell and a
-small Forth.**
+Written in C and Z80 assembly, with a UNIX-flavoured shell, an in-RAM
+filesystem, and a tiny Forth. No operating system. No target libc.
 
-This is a lab diary. It is written in the order things actually happened,
-including the parts where I was wrong. If you want the short version: I have a
-ZX Spectrum boot ROM, written in C, that runs an interactive shell on a Z80 —
-and the emulator it boots in is itself linked against a libc I wrote by hand,
-with not one byte of glibc. None of that was the plan.
+<img src="docs/screenshots/cat-motd.jpg" width="640" alt="Historical uZ80 emulator capture showing the boot splash, status bar, shell prompt, and motd">
 
-```
-                  UZ80
-           Z80 MICRO-KERNEL
-       FREESTANDING · NO LIBC
+<sub>Historical capture from the private development emulator. Public CI
+currently stops at a validated ROM image.</sub>
 
-        F E R M I  ∞  H A R T
+[![Source-to-ROM proof](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/FermiHart/uZ80/actions/workflows/ci.yml)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-6f42c1.svg)](LICENSE)
+[![Target: ZX Spectrum 48K](https://img.shields.io/badge/target-ZX%20Spectrum%2048K-cf3341.svg)](#architecture)
 
-    uz80 $ _
-```
+</div>
 
----
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-fits-in-16-kib">Features</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#proof-boundary">Proof</a> ·
+  <a href="#gallery">Gallery</a> ·
+  <a href="ROADMAP.md">Roadmap</a>
+</p>
 
-## Day 0 — "I just want to compile an old emulator"
+> [!IMPORTANT]
+> **Status: pre-release.** Public CI builds and validates the ROM, runs
+> sanitizer-backed host regressions, and proves byte-identical clean builds
+> within one toolchain environment.
+> Emulator execution is historical evidence; physical hardware remains
+> unverified.
 
-I had a 17-year-old tree on disk: `qemu-z80`, Stuart Brady's 2009 branch of
-QEMU 0.10.x that teaches it a Zilog Z80 target (it can pretend to be a ZX
-Spectrum 48K/128K, a SAM Coupé, an MSX). I typed `make`. Apple clang said no:
+## At a glance
 
-```
-error: register 'r14' unsuitable for global register variables on this target
-```
+| Surface | Current state |
+|---|---|
+| Target | ZX Spectrum 48K hardware interfaces |
+| Image | Exactly 16 KiB, reset vector at `0x0000` |
+| Toolchain | SDCC 4.2.0 in a base-image-digest-pinned Ubuntu container; apt indexes remain mutable |
+| Runtime | Bare metal; direct framebuffer, keyboard, border, beeper, and IM 1 IRQ |
+| Public proof | Host regressions, linker/map gates, ROM identity, same-environment determinism |
+| Emulator | Historical captures from a private qemu-z80 build; that emulator is not distributed or run in CI |
+| Hardware | Not tested; a 16 KiB image alone does not prove electrical or socket compatibility |
+| Release | None yet; CI artifacts are temporary evidence, not releases |
 
-QEMU 0.10 pins the CPU state pointer to a hardware register —
-`register CPUZ80State *env asm("r14")`. GCC has always allowed that. Modern
-clang does not. So a 2009 codebase will not build with a 2026 toolchain, and
-the blocker is the *compiler*, not me. Annoying. Fine. Detour.
+## Quick start
 
-## Day 1 — the detour eats the project
-
-I have this *other* thing: **Bear Libcs**, a C standard library I am writing
-from scratch — public-domain, security-first, byte-compatible with the Linux
-syscall ABI. Idle thought: instead of fighting clang, what if `qemu-z80` were
-linked against **Bear** instead of glibc?
-
-- Bear speaks the *Linux* syscall ABI, so this only makes sense for a Linux
-  binary. I build everything from here on inside a **Lima** VM (a real Linux,
-  on my Mac). GCC there, not clang — and GCC is fine with the register pinning.
-- I measured the gap first. `qemu-system-z80` references **197** libc symbols.
-  Bears covers about half by name — but most of the "missing" half already
-  exists inside Bear under `bear_*` names, just not exported as POSIX. So the
-  real maturity was ~80%.
-- I wrote a tiny shim, relinked `qemu-system-z80` static, `-nostdlib`, against
-  `libbear.a`. **It linked. Zero undefined symbols. No glibc.**
-- Then it *ran*. I logged the Z80: **~22.9 million instructions in 3 seconds**,
-  registers advancing, real Z80 disassembly. A full system emulator, hosted on
-  my hand-rolled libc.
-
-## Day 2 — evolving the libc, and the bug I'm proudest of finding
-
-A shim that papers over a libc is not interesting. Migrating the gaps *into*
-the libc is. So I moved the genuinely-missing surface into Bear's core:
-networking aliases, the `scanf` family, `open`/`fcntl`/`writev`/`pread`…, a
-chunk of libm, `popen`, a real `pthread_cond_timedwait` backed by a timed
-futex. The shim shrank to a single file: a zlib stub (zlib is not libc).
-
-The headline was a real bug. Bear's `sigaction` expected a *kernel*-shaped
-`struct sigaction`. Anything compiled with a stock `<signal.h>` — QEMU, bash,
-all of it — hands it the *glibc* layout instead. The two disagree on where
-`sa_flags` lives. QEMU's `sigfillset` then poisoned exactly the bytes Bear
-misread as flags, the kernel rejected the call, and QEMU's `SIGALRM` handler
-**silently never installed**. The VM was being killed by its own timer. Fixing
-`struct bear_sigaction` to mirror the glibc ABI fixed it for *every* program,
-not just QEMU.
-
-(Red herring of the week: `-d cpu` logged only 17 blocks and I was sure it had
-livelocked. It hadn't — chained translation blocks just don't re-log. `gdb`
-caught it happily executing JIT'd Z80 code. The lesson is always "measure the
-thing, not a proxy for the thing.")
-
-End of Day 2: a `qemu-system-z80` that boots a ZX Spectrum, links 100% against
-Bear Libcs, and runs the CPU. I fed it the real 48K Spectrum ROM and watched
-`© 1982 Sinclair Research Ltd` appear. Goosebumps, honestly.
-
-## Day 3 — UZ80: putting something of *mine* inside it
-
-I had an emulator on my Bear Libcs. I wanted my own code running *on the Z80*. So I
-wrote a kernel.
-
-**uZ80** is a bare-metal ZX Spectrum boot ROM, written in C, compiled with
-**SDCC** to a 16 KiB image. There is no operating system under it and no libc
-beside it — the Z80 resets to `0x0000` and runs *this*:
-
-- `crt0.s` — the reset vector. Sets the stack, zeroes RAM scratch, installs
-  `IM 1` so the ULA's 50 Hz frame interrupt vectors through `0x0038`, calls
-  `main()`. It also has the keyboard-matrix scan routine.
-- `kernel.c` wires boot, status, sound and the shell loop. The font, terminal,
-  keyboard decoder, filesystem, command table and Forth VM are separate small
-  modules with explicit contracts in `uz80.h`.
-
-What it does when you boot it:
-
-- paints a boot splash and a prompt — `$`
-- **reads the keyboard** straight off the Spectrum matrix
-- **blinks the cursor** off the 50 Hz hardware interrupt — a real clock, not a
-  delay loop
-- shows frame-derived uptime sampled between commands; the current 16-bit clock
-  wraps after about 21m51s and is scheduled for replacement
-- runs ~30 built-in commands: a small UNIX-flavoured shell (`ls`, `cat`, `cp`,
-  `mv`, `rm`, `wc`, `echo … > file`) over an in-RAM filesystem, plus `help`,
-  `history`, `uptime`, `cowsay`, `fortune`, `bear`, `play`, with backspace
-  (CAPS SHIFT + 0, the Spectrum's DELETE) and UP/DOWN command history
-- ships **uForth** — a tiny Forth (Jupiter Ace tribute): colon definitions,
-  `IF/ELSE/THEN`, `BEGIN/UNTIL`, `VARIABLE`, and a `SEE` decompiler
-
-The SDCC 4.2.0 build currently occupies **14,657 of 16,384 bytes** (89%).
-`make check` fails if any emitted byte crosses the ROM boundary.
-
----
-
-
-Every interface UZ80 touches is genuine ZX Spectrum hardware: the 16 KiB ROM at `0x0000`, 
-the framebuffer at `0x4000`, the `0xFE` border/keyboard port, the `IM 1` interrupt at `0x0038`. 
-SDCC emits genuine Z80 machine code. The `uz80.rom` file contains nothing emulator-specific 
-— Bear and QEMU are only the workbench.
-
-Burn `uz80.rom` onto a 16 KiB EPROM (a 27C128), drop it in place of a real
-Spectrum's ROM, power on: it would boot. Honest caveat — I have verified it in
-emulation only, not yet on physical silicon. The interfaces it uses are simple
-and standard enough that I expect it to just work.
-
-## Build it
-
-The native build needs SDCC 4.2.0 (`sdcc`, `sdasz80`, `makebin`), GNU Make,
-Python 3 and a C compiler for host regressions. Output defaults to `build/`;
-set `BUILD=/some/path` for a read-only checkout.
+The container path is canonical: it supplies SDCC 4.2.0 and runs the same gate
+as GitHub Actions.
 
 ```sh
-make            # build and validate build/uz80.rom (exactly 16 KiB)
-make test       # host tests under ASan/UBSan + validator regressions
-make check      # tests + ROM/RAM gates + two-build reproducibility proof
-make run        # build + boot in qemu-system-z80, VNC on :5948
-make shot       # build + boot headless + screenshot
-make demo       # build + boot + type a command + screenshot
-make help
-```
-
-`make demo DEMO="h e l p ret"` types a different command at the prompt.
-`run`, `shot` and `demo` require the external qemu-z80 fork and keymaps; set
-`QEMU=` and `KEYMAPS=` to their paths. VNC is explicitly loopback-bound.
-
-For a repository-defined SDCC 4.2.0 environment instead of host packages:
-
-```sh
+git clone https://github.com/FermiHart/uZ80.git
+cd uZ80
 docker build -t uz80-toolchain:sdcc-4.2 .
 mkdir -p .container-work
 docker run --rm --user "$(id -u):$(id -g)" \
+  --network none --cap-drop ALL --security-opt no-new-privileges \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev \
   -v "$PWD:/src:ro" -v "$PWD/.container-work:/work" \
   uz80-toolchain:sdcc-4.2 \
   make -C /src BUILD=/work/build check
 ```
 
-## What `make check` proves
+The validated image is written to `.container-work/build/uz80.rom`.
 
-- Intel HEX records have valid lengths and checksums.
-- Every emitted byte is below `0x4000` and exactly matches the final ROM.
-- `_DATA` starts at `0x6010`, ends before the filesystem at `0x6400`, and no
-  unsupported `_INITIALIZER` data is silently lost by the custom CRT.
-- Host shell/filesystem, keyboard-shift and editor-boundary regressions pass
-  with AddressSanitizer and UndefinedBehaviorSanitizer.
-- Two clean builds produce byte-identical ROMs.
+For a native build, install SDCC 4.2.0 (`sdcc`, `sdasz80`, `makebin`), GNU
+Make, Python 3, a C compiler, and `sha256sum`:
 
-This is still emulator-tested, not physical-hardware-proven. The Docker base
-image and direct SDCC package are fixed, but Ubuntu's apt dependency indexes are
-not snapshot-pinned, so the environment is not yet hermetic across time. The
-custom qemu-z80 fork is also not pinned or exercised in CI, and uForth's
-malformed program/error paths need a dedicated hardening wave. See
-[ROADMAP.md](ROADMAP.md).
-
-## Layout
-
+```sh
+make          # build and validate build/uz80.rom
+make test     # host ASan/UBSan tests plus proof-pipeline regressions
+make check    # tests, ROM/RAM gates, and same-environment determinism
+make help
 ```
-crt0.s     reset vector · 50 Hz IM 1 ISR · keyboard scan   (Z80 asm)
-kernel.c   boot splash · status bar · beeper · main loop   (C, SDCC)
-keyboard.c Spectrum matrix · CAPS/SYMBOL layers
-editor.c   pure line-capacity contract
-tty.c      thirds-interleaved framebuffer · line editor · history
-font.c     hand-drawn 5×7 bitmap font, ASCII 32..127
-fs.c       in-RAM filesystem (16 slots, 255-byte text payloads)
-cmd.c      the shell — ~30 built-in commands + dispatch table
-forth.c    uForth — tokeniser, compiler, threaded inner interpreter
-uz80.h     shared types, the memory map, and subsystem contracts
-tools/     fail-closed map/IHX/ROM validator
-tests/     host regressions and build-system contracts
-Makefile   build, proof, reproducibility and emulator automation
-Dockerfile versioned SDCC build environment
+
+## What fits in 16 KiB
+
+- A direct ZX Spectrum framebuffer terminal with a hand-drawn 5x7 font.
+- Matrix keyboard input with CAPS SHIFT, SYMBOL SHIFT, deletion, and history.
+- A UNIX-flavoured command surface: `ls`, `cat`, `cp`, `mv`, `rm`, `wc`,
+  `echo TEXT > FILE`, `help`, `history`, `uptime`, `fortune`, `cowsay`, and
+  more.
+- A 16-slot RAM filesystem with failure-atomic text writes and 255-byte
+  payloads.
+- uForth, a Jupiter Ace tribute with definitions, control flow, variables,
+  `SEE`, and an interactive REPL.
+- A frame-derived clock and blinking cursor driven by the 50 Hz IM 1 interrupt.
+
+The clock is intentionally honest about its current limit: its 16-bit frame
+counter wraps after roughly 21 minutes 51 seconds. Deeper uForth failure
+semantics and the long-lived clock are scheduled in [ROADMAP.md](ROADMAP.md).
+
+## Architecture
+
+```text
+crt0.s + C modules
+        |
+        v
+     SDCC 4.2.0  --->  Intel HEX + linker map
+                              |
+                              v
+                    makebin candidate ROM
+                              |
+                              v
+                    fail-closed validator
+                              |
+                              v
+                   validated 16 KiB uz80.rom
+                              |
+                              v
+       ZX ULA: screen / keyboard / border / beeper / 50 Hz IRQ
 ```
+
+| Address range | Owner | Contract |
+|---|---|---|
+| `[0x0000,0x4000)` | ROM | Reset, IM 1 vector, code, constants |
+| `[0x4000,0x5B00)` | ZX display | Bitmap and colour attributes |
+| `[0x6000,0x6010)` | Runtime scratch | Keyboard rows and frame counter |
+| `[0x6010,0x6400)` | SDCC `_DATA` | Zeroed at boot; linker-gated below FS |
+| `[0x6400,0x74D0)` | RAM filesystem | 16 fixed-capacity slots |
+| `[0x8000,0xE000)` | uForth | Data stack, return stack, dictionary |
+| `[0xE000,0xFF00)` | Native stack | Starts at `0xFF00` and grows down |
+
+The ROM contains only Z80 target code. Bear Libcs and QEMU were a private
+development workbench, not target dependencies.
+
+## Proof boundary
+
+`make check` is designed to answer a narrow question: did this source produce a
+bounded, internally consistent ROM deterministically in the current environment
+without violating the declared RAM layout?
+
+| Claim | Evidence | Boundary |
+|---|---|---|
+| A valid 16 KiB ROM is produced | Intel HEX checksum, extent, vector, and byte-identity checks | Does not execute the ROM |
+| Linked memory respects declared regions | Linker map and emitted-byte ownership validation | Layout proof, not runtime semantics |
+| Shell, FS, keyboard, and editor seams behave | Host C harness under ASan/UBSan, fail-fast on UB | Host execution is not Z80 execution |
+| Output is deterministic in one environment | Primary artifact compared with two clean build directories in one invocation | Cross-time reproducibility is not proven; apt indexes are not snapshot-pinned |
+| An unidentified historical build booted | Historical screenshots below | Does not establish current-HEAD execution; private emulator is not public or replayed in CI |
+| Physical compatibility | Not yet proven | No hardware capture exists |
+
+The badge, workflow, and uploaded CI artifacts cover only the public
+source-to-ROM boundary. They do not compile, link, execute, or certify Bear
+Libcs or the private qemu-z80 build.
+
+## External emulator
+
+The optional automation accepts an explicitly supplied compatible qemu-z80
+binary and keymap directory:
+
+```sh
+make run  QEMU=/path/to/qemu-system-z80 KEYMAPS=/path/to/qemu/keymaps
+make shot QEMU=/path/to/qemu-system-z80 KEYMAPS=/path/to/qemu/keymaps
+make demo QEMU=/path/to/qemu-system-z80 KEYMAPS=/path/to/qemu/keymaps \
+  DEMO="h e l p ret"
+```
+
+There are deliberately no private defaults. This repository does not publish
+Bear/blibc source, headers, archives, QEMU patches, or a Bear-linked executable.
+None of them is required to compile or validate uZ80. `make shot` additionally
+needs `vncsnapshot`; `make demo` needs both `vncsnapshot` and `nc`.
 
 ## Gallery
 
-Every shot below records a real boot in `qemu-system-z80`. The gallery predates
-the proof pipeline and does not yet carry per-image command or commit metadata.
+These are real captures of historical builds from the private development
+emulator. They are product evidence, not current-HEAD or CI proof. See the
+[capture provenance policy](docs/screenshots/README.md).
+
+<p align="center">
+  <img src="docs/screenshots/forthdemo.jpg" width="640" alt="uZ80 running its uForth demonstration"><br>
+  <strong>uForth</strong> - definitions, control flow, variables, and <code>SEE</code>
+</p>
+
+<details>
+<summary><strong>More historical captures</strong></summary>
 
 | | |
-|---|---|
-| ![boot + motd](docs/screenshots/cat-motd.jpg) | ![help](docs/screenshots/help.jpg) |
-| *boot splash, status bar, and `/motd`* | *`help` — the full command set* |
-| ![uForth demo](docs/screenshots/forthdemo.jpg) | ![uForth REPL](docs/screenshots/forth-repl.jpg) |
-| *`forthdemo` — IF/THEN, BEGIN/UNTIL, VARIABLE, SEE* | *the live `forth` REPL: `10 20 add .` → 30, `words`* |
-| ![history](docs/screenshots/history.jpg) | ![ls](docs/screenshots/ls.jpg) |
-| *`history` — real numbered recall* | *`ls` over the in-RAM filesystem* |
-| ![cowsay](docs/screenshots/cowsay.jpg) | ![bear](docs/screenshots/bear.jpg) |
-| *`cowsay uz80`* | *`bear` — Bear Libcs tribute banner* |
-| ![fortune](docs/screenshots/fortune.jpg) | ![uptime](docs/screenshots/uptime.jpg) |
-| *`fortune` — LFSR-picked quote* | *`uptime` off the 50 Hz ISR* |
+|:---:|:---:|
+| <img src="docs/screenshots/help.jpg" width="400" alt="uZ80 help command listing its builtins"><br>Generated command help | <img src="docs/screenshots/cowsay.jpg" width="400" alt="uZ80 cowsay command"><br><code>cowsay uz80</code> |
+| <img src="docs/screenshots/history.jpg" width="400" alt="uZ80 numbered command history"><br>Numbered history and recall | <img src="docs/screenshots/forth-repl.jpg" width="400" alt="Interactive uForth REPL"><br>Interactive uForth REPL |
+| <img src="docs/screenshots/ls.jpg" width="400" alt="uZ80 RAM filesystem listing"><br>RAM filesystem | <img src="docs/screenshots/fortune.jpg" width="400" alt="uZ80 fortune command"><br>LFSR-selected fortune |
+| <img src="docs/screenshots/uptime.jpg" width="400" alt="uZ80 uptime command"><br>Frame-derived uptime | <img src="docs/screenshots/bear.jpg" width="400" alt="uZ80 Bear Libcs tribute banner"><br>Bear Libcs tribute |
 
-## Credits & license
+</details>
 
-- `qemu-z80` — QEMU by Fabrice Bellard; the Z80 target by Stuart Brady (2009).
-  My change to it was four lines in `configure` (a macOS linker case).
-- **Bear Libcs** — my own libc; the QEMU port and the bug fixes live in its
-  `ports/qemu/` tree.
-- UZ80 itself: public domain. Unlicense. Take it, burn it, break it.
-- Listening recommended: [open.spotify.com/playlist/6flrLsdYxQZvGNRkdohL7o](https://open.spotify.com/playlist/6flrLsdYxQZvGNRkdohL7o)
+## Project map
 
-— F E R M I ∞ H A R T
+```text
+crt0.s                    reset, RAM clear, IM 1 ISR, keyboard scan
+kernel.c                  boot, status bar, beeper, main loop
+keyboard.c / editor.c     pure input decoding and line-capacity contracts
+tty.c / font.c            framebuffer terminal, history, 5x7 font
+fs.c / cmd.c              RAM filesystem and shell dispatch
+forth.c                   tokeniser, compiler, threaded interpreter
+uz80.h                    shared hardware, memory, and subsystem contracts
+tools/validate_build.py   map/IHX/ROM proof gate
+tests/                    host regressions and build-system contracts
+Dockerfile                SDCC 4.2.0 build environment
+ROADMAP.md                staged engineering plan and explicit limits
+docs/origin.md            the Bear Libcs and qemu-z80 development story
+```
+
+## Origin
+
+uZ80 began as a detour while reviving a 2009 qemu-z80 tree and experimenting
+with a private QEMU build linked against Bear Libcs. The emulator remained the
+workbench; the artifact that emerged is an independent bare-metal Z80 ROM.
+
+[Read the development story ->](docs/origin.md)
+
+## Credits and license
+
+- `qemu-z80`: QEMU by Fabrice Bellard; Z80 target by Stuart Brady (2009).
+- Bear Libcs: the author's private libc and development environment; not
+  distributed or required by uZ80.
+- uZ80 is released into the public domain under the [Unlicense](LICENSE).
+
+F E R M I ∞ H A R T · [contact@fermihart.com](mailto:contact@fermihart.com)

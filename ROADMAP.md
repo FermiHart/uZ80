@@ -6,7 +6,7 @@ not turning it into a large general-purpose operating system.
 
 ## Wave 1: proof foundation
 
-Status: in progress on `waves/01-proof-foundation`.
+Status: complete on `main`; the public CI executes this wave's exit criterion.
 
 - Fix the Docker base digest and direct SDCC package version.
 - Validate Intel HEX checksums, ROM extent, RAM extent and final image identity.
@@ -17,9 +17,9 @@ Status: in progress on `waves/01-proof-foundation`.
 - Make cleanup and emulator capture fail closed; bind VNC to loopback.
 - Run the same proof in least-privilege GitHub Actions.
 
-Exit criterion: `make check` passes from the versioned container and publishes
-a 16 KiB ROM, map and Intel HEX artifact. Snapshot-pinning all apt dependencies
-remains release work.
+Exit criterion: `make check` passes in the versioned container and generates a
+16 KiB ROM, map, and Intel HEX file; GitHub Actions uploads those files as
+temporary evidence. Snapshot-pinning all apt dependencies remains release work.
 
 ## Wave 2: transactional uForth
 
@@ -63,7 +63,10 @@ paths, with no silent truncation or ambiguous mutation.
 
 ## Wave 5: emulator and hardware evidence
 
-- Pin the qemu-z80 fork, keymaps and build instructions by commit and digest.
+- Integrate a publicly distributable compatible emulator, pinned by source or
+  package version and digest, without exposing the private Bear/blibc tree.
+- Keep the private Bear-linked qemu-z80 build outside the public release and
+  label its existing screenshots as historical evidence.
 - Replace screenshot-only smoke tests with machine-readable framebuffer,
   keyboard and interrupt assertions.
 - Attach command, source SHA, toolchain and emulator provenance to gallery
