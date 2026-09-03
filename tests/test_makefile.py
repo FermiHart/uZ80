@@ -21,6 +21,7 @@ class MakefileTests(unittest.TestCase):
             (
                 "make", target, f"BUILD={build}",
                 "Z80_CC=true", "Z80_AS=true", "MAKEBIN=true",
+                "QEMU=", "KEYMAPS=",
                 *variables,
             ),
             cwd=ROOT,
@@ -96,6 +97,20 @@ class MakefileTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             self.assertIn("-fno-sanitize-recover=all", result.stdout)
 
+    def test_emulator_binary_must_be_configured_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary) / "build"
+
+            missing = self.run_make("check-emulator", build)
+            self.assertNotEqual(missing.returncode, 0, missing.stdout)
+            self.assertIn("emulator is not bundled", missing.stdout)
+            self.assertIn("QEMU=/path/to/", missing.stdout)
+
+            configured = self.run_make(
+                "check-emulator", build, "QEMU=/bin/true"
+            )
+            self.assertEqual(configured.returncode, 0, configured.stdout)
+
     def test_all_revalidates_an_existing_primary_rom(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             build = Path(temporary) / "owned"
@@ -138,6 +153,21 @@ class MakefileTests(unittest.TestCase):
             second = self.run_make("stage", build, f"KEYMAPS={keymaps}")
             self.assertEqual(second.returncode, 0, second.stdout)
             self.assertEqual(staged.read_bytes(), fixture.rom_path.read_bytes())
+
+    def test_stage_does_not_assume_private_keymap_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary) / "owned"
+            build.mkdir()
+            (build / ".uz80-build").write_text(
+                str(ROOT.resolve()) + "\n", encoding="utf-8"
+            )
+            BuildFixture(build)
+
+            result = self.run_make("stage", build)
+
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertIn("keymaps are not bundled", result.stdout)
+            self.assertIn("KEYMAPS=/path/to/", result.stdout)
 
 
 if __name__ == "__main__":
